@@ -1,0 +1,26 @@
+# Maven
+target/
+!.mvn/wrapper/maven-wrapper.jar
+
+# IDE
+.idea/
+*.iml
+.vscode/
+.settings/
+.classpath
+.project
+
+# OS
+.DS_Store
+
+# Loglar
+*.log
+
+# Ortam değişkenleri / secret'lar (varsa)
+.env
+*.env.local
+
+# Derleme çıktıları
+*.class
+*.jar
+!.mvn/wrapper/maven-wrapper.jar

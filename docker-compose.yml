@@ -1,0 +1,155 @@
+version: '3.8'
+
+services:
+
+  # Trace'leri toplayip gorsellestiren arayuz. UI: http://localhost:16686
+  jaeger:
+    image: jaegertracing/all-in-one:1.57
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "16686:16686"  # Jaeger UI
+      - "4317:4317"    # OTLP gRPC (servisler buraya trace gonderiyor)
+      - "4318:4318"    # OTLP HTTP
+
+  # Grafana - Jaeger'daki trace'leri daha zengin bir arayuzde gormek icin.
+  # Jaeger data source'u otomatik taniyor (provisioning dosyasi sayesinde).
+  grafana:
+    image: grafana/grafana:11.1.0
+    ports:
+      - "3001:3000"  # UI: http://localhost:3001 (frontend 3000'i kullandigi icin farkli port)
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: "Admin"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning
+    depends_on:
+      - jaeger
+      - prometheus
+      - loki
+
+  # Metrikleri (istek sayisi, gecikme, hata orani, JVM bellek vs.) toplar.
+  # UI: http://localhost:9090
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+
+  # Tum container loglarini toplayip saklar. Grafana'dan sorgulanir.
+  loki:
+    image: grafana/loki:3.1.1
+    ports:
+      - "3100:3100"
+    volumes:
+      - ./loki/loki-config.yml:/etc/loki/local-config.yaml
+    command: -config.file=/etc/loki/local-config.yaml
+
+  # Docker container loglarini okuyup Loki'ye gonderen ajan.
+  promtail:
+    image: grafana/promtail:3.1.1
+    volumes:
+      - ./promtail/promtail-config.yml:/etc/promtail/config.yml
+      - /var/run/docker.sock:/var/run/docker.sock
+    command: -config.file=/etc/promtail/config.yml
+    depends_on:
+      - loki
+
+  user-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: userdb
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - user-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  task-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: taskdb
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5433:5432"
+    volumes:
+      - task-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  user-service:
+    build: ./user-service
+    ports:
+      - "8081:8081"
+    environment:
+      DB_URL: jdbc:postgresql://user-db:5432/userdb
+      DB_USERNAME: postgres
+      DB_PASSWORD: postgres
+      JWT_SECRET: cok-gizli-bir-anahtar-en-az-32-karakter-olmali-12345
+      JWT_EXPIRATION_MS: 3600000
+      # OpenTelemetry ayarlari
+      OTEL_SERVICE_NAME: user-service
+      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: http://jaeger:4318/v1/traces
+      OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+      OTEL_TRACES_EXPORTER: otlp
+      OTEL_METRICS_EXPORTER: none
+      OTEL_LOGS_EXPORTER: none
+    depends_on:
+      user-db:
+        condition: service_healthy
+      jaeger:
+        condition: service_started
+
+  task-service:
+    build: ./task-service
+    ports:
+      - "8082:8082"
+    environment:
+      DB_URL: jdbc:postgresql://task-db:5432/taskdb
+      DB_USERNAME: postgres
+      DB_PASSWORD: postgres
+      JWT_SECRET: cok-gizli-bir-anahtar-en-az-32-karakter-olmali-12345
+      OTEL_SERVICE_NAME: task-service
+      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: http://jaeger:4318/v1/traces
+      OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+      OTEL_TRACES_EXPORTER: otlp
+      OTEL_METRICS_EXPORTER: none
+      OTEL_LOGS_EXPORTER: none
+    depends_on:
+      task-db:
+        condition: service_healthy
+      jaeger:
+        condition: service_started
+
+  api-gateway:
+    build: ./api-gateway
+    ports:
+      - "8080:8080"
+    environment:
+      USER_SERVICE_URL: http://user-service:8081
+      TASK_SERVICE_URL: http://task-service:8082
+      OTEL_SERVICE_NAME: api-gateway
+      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: http://jaeger:4318/v1/traces
+      OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+      OTEL_TRACES_EXPORTER: otlp
+      OTEL_METRICS_EXPORTER: none
+      OTEL_LOGS_EXPORTER: none
+    depends_on:
+      - user-service
+      - task-service
+      - jaeger
+
+volumes:
+  user-db-data:
+  task-db-data:

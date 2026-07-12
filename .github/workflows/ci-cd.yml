@@ -1,0 +1,69 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+
+  # Her servis için ayrı ayrı test + build (matrix strategy)
+  build-and-test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        service: [user-service, task-service, api-gateway]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: JDK 21 kur
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+          cache: maven
+
+      - name: Testleri çalıştır ve derle
+        working-directory: ./${{ matrix.service }}
+        run: mvn clean verify
+
+  # Testler geçtikten sonra her servisi Docker imajı olarak push et
+  docker-build-push:
+    needs: build-and-test
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        service: [user-service, task-service, api-gateway]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Docker Hub'a giriş yap
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Docker imajını oluştur ve push et
+        uses: docker/build-push-action@v5
+        with:
+          context: ./${{ matrix.service }}
+          push: true
+          tags: ${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.service }}:latest
+
+  # Tüm imajlar hazır olunca Kubernetes'e deploy et
+  deploy:
+    needs: docker-build-push
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: kubectl kur
+        uses: azure/setup-kubectl@v4
+
+      - name: Kubernetes manifestlerini uygula
+        run: |
+          echo "Örnek: kubectl apply -f k8s/ komutu burada çalıştırılır"
+          echo "Gerçek kullanımda KUBECONFIG secret olarak eklenmeli"
