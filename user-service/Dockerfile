@@ -8,9 +8,7 @@ WORKDIR /app
 
 # OpenTelemetry Java auto-instrumentation agent'ini indiriyoruz.
 # Bu jar, kodu hic degistirmeden HTTP isteklerini, JPA sorgularini vs. otomatik izler.
-RUN apk add --no-cache curl && \
-    curl -L -o opentelemetry-javaagent.jar \
-    https://github.com/open-telemetry/opentelemetry-java-instrumentation/releases/latest/download/opentelemetry-javaagent.jar
+RUN apk add --no-cache curl && curl -fL --retry 3 -o opentelemetry-javaagent.jar https://github.com/open-telemetry/opentelemetry-java-instrumentation/releases/latest/download/opentelemetry-javaagent.jar
 
 COPY --from=build /app/target/*.jar app.jar
 EXPOSE 8081
