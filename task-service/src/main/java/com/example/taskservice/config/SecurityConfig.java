@@ -28,6 +28,7 @@ public class SecurityConfig {
                 .requestMatchers("/actuator/health", "/actuator/prometheus").permitAll()
                 // Swagger UI ve OpenAPI dokümanları herkese açık (görev endpoint'leri hâlâ JWT ister)
                 .requestMatchers("/swagger-ui/**", "/v3/api-docs/**", "/swagger-ui.html").permitAll()
+                .requestMatchers("/error").permitAll()
                 .anyRequest().authenticated()
             )
             .addFilterBefore(jwtAuthFilter, UsernamePasswordAuthenticationFilter.class);
