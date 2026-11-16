@@ -49,6 +49,7 @@ jobs:
       - name: İmajı oluştur ve push et
         uses: docker/build-push-action@v5
         with:
+          platforms: linux/amd64,linux/arm64
           context: ./${{ matrix.service }}
           push: true
           tags: |
