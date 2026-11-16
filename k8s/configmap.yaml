@@ -1,0 +1,22 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+data:
+  # Servis adresleri (Kubernetes DNS)
+  USER_SERVICE_URL: http://user-service:8081
+  TASK_SERVICE_URL: http://task-service:8082
+  CATEGORY_SERVICE_URL: http://category-service:8084
+  RABBITMQ_HOST: rabbitmq
+  RABBITMQ_PORT: "5672"
+  JWT_EXPIRATION_MS: "3600000"
+  # Veritabanı adresleri (her servise ayrı veritabanı)
+  USERS_DB_URL: jdbc:postgresql://users-db:5432/userdb
+  TASKS_DB_URL: jdbc:postgresql://tasks-db:5432/taskdb
+  CATEGORIES_DB_URL: jdbc:postgresql://categories-db:5432/categorydb
+  # OpenTelemetry (HTTP/protobuf => 4318 portu, gRPC portu DEĞİL)
+  OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: http://jaeger:4318/v1/traces
+  OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+  OTEL_TRACES_EXPORTER: otlp
+  OTEL_METRICS_EXPORTER: none
+  OTEL_LOGS_EXPORTER: none

@@ -1,0 +1,25 @@
+# Maven / Java
+target/
+*.class
+*.jar
+
+# Node / Next.js
+node_modules/
+.next/
+
+# IDE
+.idea/
+*.iml
+.vscode/
+.settings/
+.classpath
+.project
+
+# OS
+.DS_Store
+
+# Log ve ortam dosyaları
+*.log
+.env
+.env.local
+k8s/secret.yaml

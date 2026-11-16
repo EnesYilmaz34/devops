@@ -1,0 +1,94 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+
+  # 1) Her servis paralel olarak derlenir ve test edilir (matrix strategy)
+  build-and-test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false          # bir servis kırılsa bile diğerlerinin sonucunu görebil
+      matrix:
+        service: [user-service, task-service, category-service, notification-service, api-gateway]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: JDK 21 kur
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+          cache: maven
+
+      - name: Derle ve test et
+        working-directory: ./${{ matrix.service }}
+        run: mvn --batch-mode clean verify
+
+  # 2) Testler geçerse imajlar Docker Hub'a push edilir (latest + commit SHA etiketi)
+  docker-build-push:
+    needs: build-and-test
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        service: [user-service, task-service, category-service, notification-service, api-gateway]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Docker Hub'a giriş yap
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}     # "Read & Write" yetkili access token olmalı
+
+      - name: İmajı oluştur ve push et
+        uses: docker/build-push-action@v5
+        with:
+          context: ./${{ matrix.service }}
+          push: true
+          tags: |
+            ${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.service }}:latest
+            ${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.service }}:${{ github.sha }}
+
+  # 3) Uzak bir cluster için otomatik deploy (KUBE_CONFIG secret'ı tanımlıysa).
+  #    Yerel Docker Desktop/Minikube cluster'ına GitHub erişemez; onun için scripts/deploy-k8s.sh kullanılır.
+  deploy:
+    needs: docker-build-push
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    env:
+      KUBE_CONFIG: ${{ secrets.KUBE_CONFIG }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cluster erişimi var mı?
+        id: check
+        run: |
+          if [ -z "$KUBE_CONFIG" ]; then
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "KUBE_CONFIG secret'ı tanımlı değil: deploy atlandı. Yerel cluster için scripts/deploy-k8s.sh kullanın."
+          else
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: kubectl kur
+        if: steps.check.outputs.enabled == 'true'
+        uses: azure/setup-kubectl@v4
+
+      - name: Manifest'leri uygula ve rollout'u doğrula
+        if: steps.check.outputs.enabled == 'true'
+        run: |
+          mkdir -p ~/.kube
+          echo "$KUBE_CONFIG" > ~/.kube/config
+          kubectl apply -f k8s/
+          for d in user-service task-service category-service notification-service api-gateway; do
+            kubectl rollout restart deployment/$d
+          done
+          for d in user-service task-service category-service notification-service api-gateway; do
+            kubectl rollout status deployment/$d --timeout=300s
+          done

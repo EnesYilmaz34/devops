@@ -1,0 +1,229 @@
+# Tüm sistemi tek komutla ayağa kaldırır:  docker-compose up --build
+#
+# Arayüzler:
+#   Gateway (API)   http://localhost:8080        Jaeger     http://localhost:16686
+#   Grafana         http://localhost:3001        Prometheus http://localhost:9090
+#   RabbitMQ UI     http://localhost:15672 (taskapp / taskapp123)
+
+x-otel: &otel
+  OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: http://jaeger:4318/v1/traces
+  OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+  OTEL_TRACES_EXPORTER: otlp
+  OTEL_METRICS_EXPORTER: none
+  OTEL_LOGS_EXPORTER: none
+
+x-jwt: &jwt
+  JWT_SECRET: cok-gizli-bir-anahtar-en-az-32-karakter-olmali-12345   # DEMO değeri, üretimde Secret kullan
+
+x-rabbit: &rabbit
+  RABBITMQ_HOST: rabbitmq
+  RABBITMQ_PORT: 5672
+  RABBITMQ_USERNAME: taskapp
+  RABBITMQ_PASSWORD: taskapp123
+
+services:
+
+  # ------------------------- Gözlemlenebilirlik -------------------------
+  jaeger:
+    image: jaegertracing/all-in-one:1.57
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "16686:16686"   # Jaeger UI
+      - "4317:4317"     # OTLP gRPC
+      - "4318:4318"     # OTLP HTTP (servisler buraya trace gönderir)
+
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+
+  loki:
+    image: grafana/loki:3.1.1
+    ports:
+      - "3100:3100"
+    volumes:
+      - ./loki/loki-config.yml:/etc/loki/local-config.yaml
+    command: -config.file=/etc/loki/local-config.yaml
+
+  promtail:
+    image: grafana/promtail:3.1.1
+    volumes:
+      - ./promtail/promtail-config.yml:/etc/promtail/config.yml
+      - /var/run/docker.sock:/var/run/docker.sock
+    command: -config.file=/etc/promtail/config.yml
+    depends_on:
+      - loki
+
+  grafana:
+    image: grafana/grafana:11.1.0
+    ports:
+      - "3001:3000"     # frontend 3000'i kullandığı için Grafana 3001'de
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: "Admin"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning
+    depends_on:
+      - jaeger
+      - prometheus
+      - loki
+
+  # ------------------------- Mesaj kuyruğu -------------------------
+  rabbitmq:
+    image: rabbitmq:3.13-management
+    hostname: rabbitmq              # sabit hostname: kalıcı veri yeniden başlatmada bulunabilsin
+    environment:
+      RABBITMQ_DEFAULT_USER: taskapp
+      RABBITMQ_DEFAULT_PASS: taskapp123
+    ports:
+      - "5672:5672"      # AMQP
+      - "15672:15672"    # Yönetim arayüzü
+      - "15692:15692"    # Prometheus metrikleri
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+      - ./rabbitmq/enabled_plugins:/etc/rabbitmq/enabled_plugins
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+
+  # ------------------------- Veritabanları (her servise ayrı) -------------------------
+  users-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: userdb
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5441:5432"
+    volumes:
+      - users-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  tasks-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: taskdb
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5442:5432"
+    volumes:
+      - tasks-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  categories-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: categorydb
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5443:5432"
+    volumes:
+      - categories-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ------------------------- Mikroservisler -------------------------
+  user-service:
+    build: ./user-service
+    ports:
+      - "8081:8081"
+    environment:
+      <<: [*otel, *jwt]
+      DB_URL: jdbc:postgresql://users-db:5432/userdb
+      DB_USERNAME: postgres
+      DB_PASSWORD: postgres
+      JWT_EXPIRATION_MS: 3600000
+      OTEL_SERVICE_NAME: user-service
+    depends_on:
+      users-db:
+        condition: service_healthy
+      jaeger:
+        condition: service_started
+
+  category-service:
+    build: ./category-service
+    ports:
+      - "8084:8084"
+    environment:
+      <<: [*otel, *jwt]
+      DB_URL: jdbc:postgresql://categories-db:5432/categorydb
+      DB_USERNAME: postgres
+      DB_PASSWORD: postgres
+      OTEL_SERVICE_NAME: category-service
+    depends_on:
+      categories-db:
+        condition: service_healthy
+      jaeger:
+        condition: service_started
+
+  task-service:
+    build: ./task-service
+    ports:
+      - "8082:8082"
+    environment:
+      <<: [*otel, *jwt, *rabbit]
+      DB_URL: jdbc:postgresql://tasks-db:5432/taskdb
+      DB_USERNAME: postgres
+      DB_PASSWORD: postgres
+      CATEGORY_SERVICE_URL: http://category-service:8084
+      OTEL_SERVICE_NAME: task-service
+    depends_on:
+      tasks-db:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      jaeger:
+        condition: service_started
+
+  notification-service:
+    build: ./notification-service
+    ports:
+      - "8083:8083"
+    environment:
+      <<: [*otel, *rabbit]
+      OTEL_SERVICE_NAME: notification-service
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      jaeger:
+        condition: service_started
+
+  api-gateway:
+    build: ./api-gateway
+    ports:
+      - "8080:8080"
+    environment:
+      <<: *otel
+      USER_SERVICE_URL: http://user-service:8081
+      TASK_SERVICE_URL: http://task-service:8082
+      CATEGORY_SERVICE_URL: http://category-service:8084
+      OTEL_SERVICE_NAME: api-gateway
+    depends_on:
+      - user-service
+      - task-service
+      - category-service
+      - jaeger
+
+volumes:
+  users-db-data:
+  tasks-db-data:
+  categories-db-data:
+  rabbitmq-data:
